@@ -50,7 +50,7 @@ jobs:
           mkdir -p crx src
           curl -sL "${{ steps.fetch.outputs.crx_url }}" -o crx/extension.crx
           bsdtar -xf crx/extension.crx -C src
-
+          
       - name: Commit and Push to New Branch
         if: steps.check.outputs.exists == 'false'
         run: |
@@ -63,4 +63,7 @@ jobs:
           git config user.email "actions@github.com"
           git commit -m "Add GoGuardian extension version $VERSION"
 
-          git push "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git" "$VERSION"
+          # Fix: Set remote URL explicitly with PAT
+          git remote set-url origin https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git
+
+          git push origin "$VERSION"
