@@ -2,7 +2,7 @@ name: Fast GoGuardian CRX Update
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Runs every 5 minutes
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -15,22 +15,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install fast tools
+      - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y curl xmlstarlet libarchive-tools jq
 
       - name: Fetch CRX URL and Version
         id: fetch
         run: |
           curl -sL https://ext.goguardian.com/stable.xml -o stable.xml
-
           VERSION=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v "//g:updatecheck/@version" stable.xml)
           CRX_URL=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v "//g:updatecheck/@codebase" stable.xml)
-
-          echo "Found version: $VERSION"
           echo "crx_url=$CRX_URL" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Check if version branch already exists
+      - name: Check if version branch exists
         id: check
         run: |
           VERSION="${{ steps.fetch.outputs.version }}"
@@ -51,7 +48,7 @@ jobs:
           curl -sL "${{ steps.fetch.outputs.crx_url }}" -o crx/extension.crx
           bsdtar -xf crx/extension.crx -C src
 
-      - name: Upload src to New Branch via GitHub API
+      - name: Upload src to new branch via GitHub API
         if: steps.check.outputs.exists == 'false'
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
@@ -60,31 +57,28 @@ jobs:
         run: |
           echo "Creating branch $VERSION"
 
-          # Get default branch SHA
           DEFAULT_BRANCH=$(curl -s -H "Authorization: token $GH_PAT" https://api.github.com/repos/$REPO | jq -r .default_branch)
           BASE_SHA=$(curl -s -H "Authorization: token $GH_PAT" https://api.github.com/repos/$REPO/git/ref/heads/$DEFAULT_BRANCH | jq -r .object.sha)
 
-          # Create new branch ref
           curl -s -X POST \
             -H "Authorization: token $GH_PAT" \
             -H "Content-Type: application/json" \
             -d "{\"ref\":\"refs/heads/$VERSION\",\"sha\":\"$BASE_SHA\"}" \
             https://api.github.com/repos/$REPO/git/refs
 
-          echo "Uploading files to branch $VERSION"
           for FILE in $(find src -type f); do
             FILE_PATH="src/${FILE#src/}"
             ENCODED_CONTENT=$(base64 "$FILE" | tr -d '\n')
 
+            JSON_PAYLOAD=$(jq -n \
+              --arg msg "Add $FILE_PATH in version $VERSION" \
+              --arg content "$ENCODED_CONTENT" \
+              --arg branch "$VERSION" \
+              '{message: $msg, content: $content, branch: $branch}')
+
             curl -s -X PUT \
               -H "Authorization: token $GH_PAT" \
               -H "Content-Type: application/json" \
-              -d @- \
-              "https://api.github.com/repos/$REPO/contents/$FILE_PATH?ref=$VERSION" <<EOF
-{
-  "message": "Add $FILE_PATH in version $VERSION",
-  "content": "$ENCODED_CONTENT",
-  "branch": "$VERSION"
-}
-EOF
+              -d "$JSON_PAYLOAD" \
+              "https://api.github.com/repos/$REPO/contents/$FILE_PATH?ref=$VERSION"
           done
