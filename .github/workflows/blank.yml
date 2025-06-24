@@ -1,0 +1,68 @@
+name: Update GoGuardian CRX to Version Branch
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Every day at 6:00 UTC
+  workflow_dispatch:
+
+jobs:
+  update-extension:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed to create new branches
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y unzip curl xmlstarlet
+
+      - name: Fetch CRX URL and version
+        id: fetch
+        run: |
+          XML_URL="https://ext.goguardian.com/stable.xml"
+          curl -s "$XML_URL" -o stable.xml
+
+          CRX_URL=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v '//g:updatecheck/@codebase' stable.xml)
+          VERSION=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v '//g:updatecheck/@version' stable.xml)
+
+          echo "Found CRX URL: $CRX_URL"
+          echo "Version: $VERSION"
+
+          echo "crx_url=$CRX_URL" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download CRX
+        run: |
+          mkdir -p crx
+          curl -L "${{ steps.fetch.outputs.crx_url }}" -o crx/extension.crx
+
+      - name: Extract CRX
+        run: |
+          mkdir -p src
+          dd if=crx/extension.crx bs=1 skip=16 of=crx/extension.zip status=none
+          unzip -o crx/extension.zip -d src/
+
+      - name: Create and push version branch
+        run: |
+          VERSION="${{ steps.fetch.outputs.version }}"
+          BRANCH="$VERSION"
+
+          # Check if branch exists
+          if git ls-remote --exit-code --heads origin "$BRANCH"; then
+            echo "Branch $BRANCH already exists. Skipping."
+            exit 0
+          fi
+
+          git checkout --orphan "$BRANCH"
+          git rm -rf . > /dev/null 2>&1 || true
+
+          mv src/* .
+          rmdir src
+
+          mkdir -p src
+          git mv * src || true  # move all contents to src, ignore if empty
+          git add src
+          git commit -m "Add GoGuardian extension version $VERSION"
+          git push origin "$BRANCH"
