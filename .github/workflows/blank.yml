@@ -16,7 +16,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install fast tools
-        run: sudo apt-get update && sudo apt-get install -y curl xmlstarlet libarchive-tools
+        run: sudo apt-get update && sudo apt-get install -y curl xmlstarlet libarchive-tools jq
 
       - name: Fetch CRX URL and Version
         id: fetch
@@ -50,20 +50,41 @@ jobs:
           mkdir -p crx src
           curl -sL "${{ steps.fetch.outputs.crx_url }}" -o crx/extension.crx
           bsdtar -xf crx/extension.crx -C src
-          
-      - name: Commit and Push to New Branch
+
+      - name: Upload src to New Branch via GitHub API
         if: steps.check.outputs.exists == 'false'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.fetch.outputs.version }}
         run: |
-          VERSION="${{ steps.fetch.outputs.version }}"
-          git checkout --orphan "$VERSION"
-          git rm -rf . > /dev/null 2>&1 || true
+          echo "Creating branch $VERSION"
 
-          git add src
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git commit -m "Add GoGuardian extension version $VERSION"
+          # Get default branch SHA
+          DEFAULT_BRANCH=$(curl -s -H "Authorization: token $GH_PAT" https://api.github.com/repos/$REPO | jq -r .default_branch)
+          BASE_SHA=$(curl -s -H "Authorization: token $GH_PAT" https://api.github.com/repos/$REPO/git/ref/heads/$DEFAULT_BRANCH | jq -r .object.sha)
 
-          # Fix: Set remote URL explicitly with PAT
-          git remote set-url origin https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git
+          # Create new branch ref
+          curl -s -X POST \
+            -H "Authorization: token $GH_PAT" \
+            -H "Content-Type: application/json" \
+            -d "{\"ref\":\"refs/heads/$VERSION\",\"sha\":\"$BASE_SHA\"}" \
+            https://api.github.com/repos/$REPO/git/refs
 
-          git push origin "$VERSION"
+          echo "Uploading files to branch $VERSION"
+          for FILE in $(find src -type f); do
+            FILE_PATH="src/${FILE#src/}"
+            ENCODED_CONTENT=$(base64 "$FILE" | tr -d '\n')
+
+            curl -s -X PUT \
+              -H "Authorization: token $GH_PAT" \
+              -H "Content-Type: application/json" \
+              -d @- \
+              "https://api.github.com/repos/$REPO/contents/$FILE_PATH?ref=$VERSION" <<EOF
+{
+  "message": "Add $FILE_PATH in version $VERSION",
+  "content": "$ENCODED_CONTENT",
+  "branch": "$VERSION"
+}
+EOF
+          done
