@@ -2,8 +2,8 @@ name: Update GoGuardian CRX to Version Branch
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # Every day at 6:00 UTC
-  workflow_dispatch:
+    - cron: '0 6 * * *'  # Runs daily at 6:00 UTC
+  workflow_dispatch:      # Allows manual trigger
 
 jobs:
   update-extension:
@@ -13,19 +13,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Needed to create new branches
+          fetch-depth: 0  # Required to create orphan branches
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y unzip curl xmlstarlet
+        run: sudo apt-get update && sudo apt-get install -y curl xmlstarlet bsdtar
 
-      - name: Fetch CRX URL and version
+      - name: Fetch CRX URL and Version from XML
         id: fetch
         run: |
-          XML_URL="https://ext.goguardian.com/stable.xml"
-          curl -s "$XML_URL" -o stable.xml
+          curl -sL https://ext.goguardian.com/stable.xml -o stable.xml
 
-          CRX_URL=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v '//g:updatecheck/@codebase' stable.xml)
-          VERSION=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v '//g:updatecheck/@version' stable.xml)
+          # Parse CRX download URL and version
+          CRX_URL=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v "//g:updatecheck/@codebase" stable.xml)
+          VERSION=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v "//g:updatecheck/@version" stable.xml)
 
           echo "Found CRX URL: $CRX_URL"
           echo "Version: $VERSION"
@@ -33,36 +33,34 @@ jobs:
           echo "crx_url=$CRX_URL" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Download CRX
+      - name: Download CRX file
         run: |
           mkdir -p crx
           curl -L "${{ steps.fetch.outputs.crx_url }}" -o crx/extension.crx
 
-      - name: Extract CRX
+      - name: Extract CRX using bsdtar
         run: |
           mkdir -p src
-          dd if=crx/extension.crx bs=1 skip=16 of=crx/extension.zip status=none
-          unzip -o crx/extension.zip -d src/
+          bsdtar -xf crx/extension.crx -C src
 
-      - name: Create and push version branch
+      - name: Create version branch and commit
         run: |
           VERSION="${{ steps.fetch.outputs.version }}"
           BRANCH="$VERSION"
 
-          # Check if branch exists
+          # Check if the branch already exists on remote
           if git ls-remote --exit-code --heads origin "$BRANCH"; then
-            echo "Branch $BRANCH already exists. Skipping."
+            echo "Branch $BRANCH already exists. Skipping push."
             exit 0
           fi
 
+          # Create a new orphan branch
           git checkout --orphan "$BRANCH"
           git rm -rf . > /dev/null 2>&1 || true
 
-          mv src/* .
-          rmdir src
-
-          mkdir -p src
-          git mv * src || true  # move all contents to src, ignore if empty
+          # Stage files under src/
           git add src
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
           git commit -m "Add GoGuardian extension version $VERSION"
           git push origin "$BRANCH"
