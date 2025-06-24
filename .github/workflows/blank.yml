@@ -1,66 +1,66 @@
-name: Update GoGuardian CRX to Version Branch
+name: Fast GoGuardian CRX Update
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # Runs daily at 6:00 UTC
-  workflow_dispatch:      # Allows manual trigger
+    - cron: '*/5 * * * *'  # Runs every 5 minutes
+  workflow_dispatch:
 
 jobs:
   update-extension:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout with full history
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Required to create orphan branches
+          fetch-depth: 0
 
-      - name: Install dependencies
+      - name: Install fast tools
         run: sudo apt-get update && sudo apt-get install -y curl xmlstarlet libarchive-tools
 
-      - name: Fetch CRX URL and Version from XML
+      - name: Fetch CRX URL and Version
         id: fetch
         run: |
           curl -sL https://ext.goguardian.com/stable.xml -o stable.xml
 
-          # Parse CRX download URL and version
-          CRX_URL=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v "//g:updatecheck/@codebase" stable.xml)
           VERSION=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v "//g:updatecheck/@version" stable.xml)
+          CRX_URL=$(xmlstarlet sel -N g="http://www.google.com/update2/response" -t -v "//g:updatecheck/@codebase" stable.xml)
 
-          echo "Found CRX URL: $CRX_URL"
-          echo "Version: $VERSION"
-
+          echo "Found version: $VERSION"
           echo "crx_url=$CRX_URL" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Download CRX file
-        run: |
-          mkdir -p crx
-          curl -L "${{ steps.fetch.outputs.crx_url }}" -o crx/extension.crx
-
-      - name: Extract CRX using bsdtar
-        run: |
-          mkdir -p src
-          bsdtar -xf crx/extension.crx -C src
-
-      - name: Create version branch and commit
+      - name: Check if version branch already exists
+        id: check
         run: |
           VERSION="${{ steps.fetch.outputs.version }}"
-          BRANCH="$VERSION"
-
-          # Check if the branch already exists on remote
-          if git ls-remote --exit-code --heads origin "$BRANCH"; then
-            echo "Branch $BRANCH already exists. Skipping push."
-            exit 0
+          if git ls-remote --exit-code --heads origin "$VERSION"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-          # Create a new orphan branch
-          git checkout --orphan "$BRANCH"
+      - name: Exit early if branch exists
+        if: steps.check.outputs.exists == 'true'
+        run: echo "Branch already exists. Skipping."
+
+      - name: Download and Extract CRX
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          mkdir -p crx src
+          curl -sL "${{ steps.fetch.outputs.crx_url }}" -o crx/extension.crx
+          bsdtar -xf crx/extension.crx -C src
+
+      - name: Commit and Push to New Branch
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.fetch.outputs.version }}"
+          git checkout --orphan "$VERSION"
           git rm -rf . > /dev/null 2>&1 || true
 
-          # Stage files under src/
           git add src
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git commit -m "Add GoGuardian extension version $VERSION"
-          git push origin "$BRANCH"
+
+          git push "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git" "$VERSION"
